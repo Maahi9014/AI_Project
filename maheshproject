@@ -1,0 +1,88 @@
+import openai
+import PyPDF2
+import re
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from tabulate import tabulate
+
+openai.api_key = "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"
+
+def extract_text_from_pdf(pdf_path):
+    with open(pdf_path, 'rb') as file:
+        reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text()
+        return text
+
+def chunk_text(text, chunk_size=300):
+    chunks = []
+    paragraphs = re.split(r'\n\n+', text)  
+    current_chunk = ""
+    for paragraph in paragraphs:
+        if len(current_chunk) + len(paragraph) <= chunk_size:
+            current_chunk += paragraph + " "
+        else:
+            chunks.append(current_chunk.strip())
+            current_chunk = paragraph
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    return chunks
+
+
+def create_vector_database(chunks):
+    model = SentenceTransformer('all-MiniLM-L6-v2')  
+    embeddings = model.encode(chunks)
+    return embeddings, chunks
+
+def query_embedding(query, model):
+    return model.encode([query])[0]
+
+def retrieve_relevant_chunks(query, embeddings, chunks, model, top_k=5):
+    query_vector = query_embedding(query, model).reshape(1, -1)
+    similarities = cosine_similarity(query_vector, embeddings)
+    indices = similarities.argsort()[0][-top_k:][::-1]  
+    return [chunks[i] for i in indices]
+
+def generate_response(query, relevant_chunks, llm):
+    context = "\n".join(relevant_chunks)
+    prompt = f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
+    response = openai.Completion.create(
+        engine="text-davinci-003",  
+        prompt=prompt,
+        max_tokens=500
+    )
+    return response['choices'][0]['text']
+
+
+def extract_comparison_terms(query):
+    return re.findall(r'\b(?:compare|difference|between|among)\b\s+(.*)', query, re.IGNORECASE)
+
+def retrieve_comparison_data(terms, embeddings, chunks, model):
+    relevant_data = []
+    for term in terms:
+        relevant_data += retrieve_relevant_chunks(term, embeddings, chunks, model)
+    return relevant_data
+
+def format_comparison_response(data):
+    return tabulate(data, headers="keys", tablefmt="grid")
+
+
+pdf_text = extract_text_from_pdf("data.pdf")  
+chunks = chunk_text(pdf_text)
+embeddings, chunks = create_vector_database(chunks)
+
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+query = "What is the unemployment rate on page 2?"
+relevant_chunks = retrieve_relevant_chunks(query, embeddings, chunks, model)
+response = generate_response(query, relevant_chunks, openai)
+print("Response:", response)
+
+comparison_query = "Compare the unemployment rates between 2020 and 2021."
+comparison_terms = extract_comparison_terms(comparison_query)
+comparison_data = retrieve_comparison_data(comparison_terms, embeddings, chunks, model)
+
+structured_response = format_comparison_response(comparison_data)
+print("Comparison Response:", structured_response)
